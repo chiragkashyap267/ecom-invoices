@@ -200,36 +200,18 @@ export default function InvoiceApp(): React.JSX.Element {
     }
   };
 
+  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
+
   const generatePDF = async () => {
     if (typeof window === 'undefined' || !invoiceRef.current) return;
     setIsGenerating(true);
+    setPdfStatus('Starting PDF generation...');
     const filename = `Invoice-${invoiceData.invoiceNo}.pdf`;
 
-    // Try html2pdf (CDN) first
-    if (window.html2pdf) {
-      try {
-        console.debug('generatePDF: using window.html2pdf');
-        const element = invoiceRef.current as HTMLDivElement;
-        const opt = {
-          margin: [10, 10, 10, 10],
-          filename,
-          image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-          pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-        };
-        window.html2pdf().set(opt).from(element).save();
-        console.debug('generatePDF: html2pdf.save() called');
-        setIsGenerating(false);
-        return;
-      } catch (err) {
-        console.error('html2pdf error, falling back to html2canvas/jsPDF', err);
-      }
-    }
-
-    // Fallback: dynamic import of html2canvas + jsPDF
+    // Prefer local fallback (html2canvas + jsPDF) because CDN html2pdf can be unreliable in some deployment environments.
     try {
-      console.debug('generatePDF: falling back to html2canvas + jsPDF');
+      console.debug('generatePDF: using local html2canvas + jsPDF fallback');
+      setPdfStatus('Rendering canvas (html2canvas)...');
       const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
         import('html2canvas'),
         import('jspdf')
@@ -237,8 +219,107 @@ export default function InvoiceApp(): React.JSX.Element {
 
       const element = invoiceRef.current as HTMLDivElement;
       console.debug('generatePDF: calling html2canvas');
-      const canvas = await html2canvas(element, { scale: 2, useCORS: true, logging: false });
+      // Use onclone to copy resolved/computed colors into the cloned DOM to avoid unsupported color functions like lab()
+      // Helper: convert lab(...) occurrences to rgb(...) string
+      const replaceLabInCssValue = (val: string): string => {
+        if (!val || typeof val !== 'string') return val;
+        return val.replace(/lab\(([^)]+)\)/gi, (_, inner) => {
+          try {
+            const parts = inner.trim().split(/\s+|,\s*/).filter(Boolean);
+            if (parts.length < 3) return _;
+            // parse L a b
+            let L = parts[0];
+            let a = parts[1];
+            let b = parts[2];
+            const parseNumber = (s: string) => {
+              if (s.endsWith('%')) return parseFloat(s) * 100 / 100; // percent -> 0-100
+              return parseFloat(s);
+            };
+            const Lnum = parseNumber(L);
+            const anum = parseFloat(a);
+            const bnum = parseFloat(b);
+            const labToRgb = (L: number, a: number, b: number) => {
+              // Convert LAB to XYZ
+              const y = (L + 16) / 116;
+              const x = a / 500 + y;
+              const z = y - b / 200;
+              const fx3 = (t: number) => (t * t * t > 0.008856 ? t * t * t : (t - 16 / 116) / 7.787);
+              const X = fx3(x) * 95.047;
+              const Y = fx3(y) * 100.0;
+              const Z = fx3(z) * 108.883;
+              // Convert XYZ to sRGB
+              let r = X * 0.032406 + Y * -0.015372 + Z * -0.004986;
+              let g = X * -0.009689 + Y * 0.017658 + Z * 0.000415;
+              let bl = X * 0.000557 + Y * -0.002040 + Z * 0.010570;
+              // normalize from 0..100 to 0..1
+              r = r / 100;
+              g = g / 100;
+              bl = bl / 100;
+              const gamma = (c: number) => (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+              r = Math.min(1, Math.max(0, gamma(r)));
+              g = Math.min(1, Math.max(0, gamma(g)));
+              bl = Math.min(1, Math.max(0, gamma(bl)));
+              return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(bl * 255)})`;
+            };
+            return labToRgb(Lnum, anum, bnum);
+          } catch (e) {
+            console.warn('lab to rgb conversion failed', e);
+            return _;
+          }
+        });
+      };
+
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        onclone: (clonedDoc: Document) => {
+          try {
+            // Replace lab() usages inside stylesheet rules first
+            try {
+              for (const sheet of Array.from(clonedDoc.styleSheets || [] as any)) {
+                try {
+                  const rules = (sheet as CSSStyleSheet).cssRules || [];
+                  for (const rule of Array.from(rules as any)) {
+                    try {
+                      if ((rule as CSSStyleRule).style && (rule as CSSStyleRule).style.cssText) {
+                        const cssText = (rule as CSSStyleRule).style.cssText;
+                        if (cssText && cssText.includes('lab(')) {
+                          (rule as CSSStyleRule).style.cssText = replaceLabInCssValue(cssText);
+                        }
+                      }
+                    } catch (e) {
+                      // ignore rule access issues
+                    }
+                  }
+                } catch (e) {
+                  // ignore sheet access issues (CORS, etc.)
+                }
+              }
+            } catch (e) {
+              console.warn('styleSheet patch failed', e);
+            }
+
+            const originals = element.querySelectorAll('*');
+            const clones = clonedDoc.querySelectorAll('*');
+            const len = Math.min(originals.length, clones.length);
+            for (let i = 0; i < len; i++) {
+              const o = originals[i] as HTMLElement;
+              const c = clones[i] as HTMLElement;
+              const cs = window.getComputedStyle(o);
+              // replace lab() in computed styles with rgb equivalents when possible
+              if (cs.color) c.style.color = replaceLabInCssValue(cs.color);
+              if (cs.backgroundColor) c.style.backgroundColor = replaceLabInCssValue(cs.backgroundColor);
+              if (cs.borderColor) c.style.borderColor = replaceLabInCssValue(cs.borderColor);
+              if (cs.boxShadow && cs.boxShadow !== 'none') c.style.boxShadow = replaceLabInCssValue(cs.boxShadow);
+            }
+          } catch (e) {
+            console.warn('onclone style patch failed', e);
+          }
+        }
+      });
       console.debug('generatePDF: canvas rendered', { width: canvas.width, height: canvas.height });
+      setPdfStatus('Canvas rendered, preparing PDF');
 
       let imgData: string | null = null;
       try {
@@ -246,6 +327,7 @@ export default function InvoiceApp(): React.JSX.Element {
         console.debug('generatePDF: canvas.toDataURL() succeeded');
       } catch (err) {
         console.warn('generatePDF: canvas.toDataURL failed, trying toBlob fallback', err);
+        setPdfStatus('Canvas toDataURL failed, trying blob fallback');
         imgData = await new Promise<string>((resolve, reject) => {
           canvas.toBlob((blob) => {
             if (!blob) return reject(new Error('toBlob returned null'));
@@ -267,21 +349,43 @@ export default function InvoiceApp(): React.JSX.Element {
       pdf.addImage(imgData as string, 'JPEG', 0, 0, pdfWidth, pdfHeight);
 
       // Create blob and trigger download via object URL for better reliability
+      setPdfStatus('Generating PDF blob...');
       const blob = await pdf.output('blob');
       console.debug('generatePDF: pdf blob ready', blob);
+      setPdfStatus('PDF blob ready, triggering download');
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
       a.download = filename;
       document.body.appendChild(a);
+      console.debug('generatePDF: calling a.click()');
       a.click();
+      console.debug('generatePDF: a.click() returned');
       a.remove();
-      URL.revokeObjectURL(blobUrl);
+
+      // Delay revoke to avoid revoking before browser starts download
+      setTimeout(() => {
+        try { URL.revokeObjectURL(blobUrl); console.debug('generatePDF: revoked blobUrl'); } catch (e) {}
+      }, 3000);
+
+      // Fallback: try opening in new tab if download didn't start (best-effort)
+      try {
+        const opened = window.open(blobUrl);
+        if (opened) {
+          console.debug('generatePDF: opened blobUrl in new tab as fallback');
+          setPdfStatus('Opened PDF in a new tab');
+        }
+      } catch (e) {
+        console.debug('generatePDF: window.open fallback failed', e);
+      }
 
       console.debug('generatePDF: download triggered via blobUrl');
+      setPdfStatus('Download triggered');
       setIsGenerating(false);
+      setTimeout(() => setPdfStatus(null), 2000);
     } catch (err) {
       console.error('PDF generation failed', err);
+      setPdfStatus('PDF generation failed');
       setIsGenerating(false);
       alert('PDF generation failed. Please open the browser console for details.');
     }
@@ -304,6 +408,11 @@ export default function InvoiceApp(): React.JSX.Element {
             <Download size={18} /> {isGenerating ? 'Generating...' : 'Download PDF'}
           </button>
         </div>
+        {pdfStatus && (
+          <div className="mt-3 w-full text-center">
+            <span className="inline-block bg-white px-3 py-1 rounded text-sm text-gray-700 shadow">{pdfStatus}</span>
+          </div>
+        )}
       </header>
 
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
