@@ -120,11 +120,11 @@ export default function InvoiceApp(): React.JSX.Element {
     
     // Payment Details - PRE-FILLED
     paymentMethod: 'Online (QR CODE)',
-    bankName: 'HDFC Bank',
-    accountNumber: '50100XXXXXXX',
-    ifscCode: 'HDFC000XXXX',
-    upiId: 'chirag@upi',
-    qrCodeImage: 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=upi://pay?pa=businesswithchirag267@gmail.com' 
+    bankName: 'kotak mahindra bank',
+    accountNumber: '7745700684',
+    ifscCode: 'KKBK0005486',
+    upiId: '9548174325@ptsbi',
+    qrCodeImage: '/default-qr.svg' 
   });
 
   const invoiceRef = useRef<HTMLDivElement | null>(null);
