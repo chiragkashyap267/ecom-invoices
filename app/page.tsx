@@ -208,6 +208,7 @@ export default function InvoiceApp(): React.JSX.Element {
     // Try html2pdf (CDN) first
     if (window.html2pdf) {
       try {
+        console.debug('generatePDF: using window.html2pdf');
         const element = invoiceRef.current as HTMLDivElement;
         const opt = {
           margin: [10, 10, 10, 10],
@@ -218,6 +219,7 @@ export default function InvoiceApp(): React.JSX.Element {
           pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
         };
         window.html2pdf().set(opt).from(element).save();
+        console.debug('generatePDF: html2pdf.save() called');
         setIsGenerating(false);
         return;
       } catch (err) {
@@ -227,22 +229,56 @@ export default function InvoiceApp(): React.JSX.Element {
 
     // Fallback: dynamic import of html2canvas + jsPDF
     try {
+      console.debug('generatePDF: falling back to html2canvas + jsPDF');
       const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
         import('html2canvas'),
         import('jspdf')
       ]);
 
       const element = invoiceRef.current as HTMLDivElement;
+      console.debug('generatePDF: calling html2canvas');
       const canvas = await html2canvas(element, { scale: 2, useCORS: true, logging: false });
-      const imgData = canvas.toDataURL('image/jpeg', 0.98);
+      console.debug('generatePDF: canvas rendered', { width: canvas.width, height: canvas.height });
+
+      let imgData: string | null = null;
+      try {
+        imgData = canvas.toDataURL('image/jpeg', 0.98);
+        console.debug('generatePDF: canvas.toDataURL() succeeded');
+      } catch (err) {
+        console.warn('generatePDF: canvas.toDataURL failed, trying toBlob fallback', err);
+        imgData = await new Promise<string>((resolve, reject) => {
+          canvas.toBlob((blob) => {
+            if (!blob) return reject(new Error('toBlob returned null'));
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = (e) => reject(e);
+            reader.readAsDataURL(blob);
+          }, 'image/jpeg', 0.98);
+        });
+        console.debug('generatePDF: canvas.toBlob -> dataURL succeeded');
+      }
 
       const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const imgProps = (pdf as any).getImageProperties ? pdf.getImageProperties(imgData) : { width: canvas.width, height: canvas.height };
       const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
 
-      pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(filename);
+      console.debug('generatePDF: adding image to pdf', { pdfWidth, pdfHeight });
+      pdf.addImage(imgData as string, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+
+      // Create blob and trigger download via object URL for better reliability
+      const blob = await pdf.output('blob');
+      console.debug('generatePDF: pdf blob ready', blob);
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+
+      console.debug('generatePDF: download triggered via blobUrl');
       setIsGenerating(false);
     } catch (err) {
       console.error('PDF generation failed', err);
