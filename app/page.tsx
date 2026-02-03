@@ -128,14 +128,18 @@ export default function InvoiceApp(): React.JSX.Element {
   });
 
   const invoiceRef = useRef<HTMLDivElement | null>(null);
+  const [pdfReady, setPdfReady] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   useEffect(() => {
     const script = document.createElement('script');
     script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
     script.async = true;
+    script.onload = () => setPdfReady(true);
+    script.onerror = () => setPdfReady(false);
     document.body.appendChild(script);
     return () => {
-      if(document.body.contains(script)) document.body.removeChild(script);
+      if (document.body.contains(script)) document.body.removeChild(script);
     };
   }, []);
 
@@ -196,21 +200,54 @@ export default function InvoiceApp(): React.JSX.Element {
     }
   };
 
-  const generatePDF = () => {
-    if (typeof window !== 'undefined' && window.html2pdf && invoiceRef.current) {
+  const generatePDF = async () => {
+    if (typeof window === 'undefined' || !invoiceRef.current) return;
+    setIsGenerating(true);
+    const filename = `Invoice-${invoiceData.invoiceNo}.pdf`;
+
+    // Try html2pdf (CDN) first
+    if (window.html2pdf) {
+      try {
+        const element = invoiceRef.current as HTMLDivElement;
+        const opt = {
+          margin: [10, 10, 10, 10],
+          filename,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+          pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+        };
+        window.html2pdf().set(opt).from(element).save();
+        setIsGenerating(false);
+        return;
+      } catch (err) {
+        console.error('html2pdf error, falling back to html2canvas/jsPDF', err);
+      }
+    }
+
+    // Fallback: dynamic import of html2canvas + jsPDF
+    try {
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+        import('html2canvas'),
+        import('jspdf')
+      ]);
+
       const element = invoiceRef.current as HTMLDivElement;
-      const opt = {
-        // MARGINS: 10mm margins on all sides
-        margin: [10, 10, 10, 10], 
-        filename: `Invoice-${invoiceData.invoiceNo}.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-      };
-      window.html2pdf().set(opt).from(element).save();
-    } else {
-      alert('PDF Generator is initializing. Please wait a moment and try again.');
+      const canvas = await html2canvas(element, { scale: 2, useCORS: true, logging: false });
+      const imgData = canvas.toDataURL('image/jpeg', 0.98);
+
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const imgProps = (pdf as any).getImageProperties ? pdf.getImageProperties(imgData) : { width: canvas.width, height: canvas.height };
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+      pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(filename);
+      setIsGenerating(false);
+    } catch (err) {
+      console.error('PDF generation failed', err);
+      setIsGenerating(false);
+      alert('PDF generation failed. Please open the browser console for details.');
     }
   };
 
@@ -225,9 +262,10 @@ export default function InvoiceApp(): React.JSX.Element {
         <div className="flex gap-3">
           <button 
             onClick={generatePDF}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg shadow transition-all font-medium"
+            disabled={isGenerating}
+            className={`flex items-center gap-2 ${isGenerating ? 'bg-blue-400 cursor-wait' : 'bg-blue-600 hover:bg-blue-700'} text-white px-6 py-2.5 rounded-lg shadow transition-all font-medium`}
           >
-            <Download size={18} /> Download PDF
+            <Download size={18} /> {isGenerating ? 'Generating...' : 'Download PDF'}
           </button>
         </div>
       </header>
