@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;600;800&display=swap');
 @import "tailwindcss";
 
 :root {
@@ -22,5 +23,55 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+
+/* Invoice-specific typography */
+#invoice-preview {
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #111827; /* slightly darker gray for print readability */
+}
+#invoice-preview h1, #invoice-preview h2, #invoice-preview h3, #invoice-preview h4, #invoice-preview .heading {
+  font-weight: 800; /* bold only for headings */
+}
+#invoice-preview .subheading, #invoice-preview .label, #invoice-preview small {
+  font-weight: 300; /* thin for sub-headings and labels */
+}
+#invoice-preview table th, #invoice-preview table td {
+  padding-top: 0.6rem;
+  padding-bottom: 0.6rem;
+}
+#invoice-preview .payment-card {
+  border-radius: 8px;
+  padding: 6px;
+}
+#invoice-preview .payment-card .bank-details {
+  font-size: 11.5px;
+  font-weight: 300;
+  line-height: 1.25;
+}
+#invoice-preview .payment-card .bank-name {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+#invoice-preview .qr-frame {
+  display:inline-block;
+  padding:10px;
+  border-radius:6px;
+  background:#ffffff;
+  border:1px solid #d1d5db;
+}
+#invoice-preview .qr-large {
+  width: 220px;
+  height: 220px;
+  object-fit: contain;
+  display: block;
+}
+#invoice-preview .payment-card .bank-details p { margin: 0 0 6px 0; }
+

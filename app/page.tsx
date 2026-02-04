@@ -307,11 +307,85 @@ export default function InvoiceApp(): React.JSX.Element {
               const o = originals[i] as HTMLElement;
               const c = clones[i] as HTMLElement;
               const cs = window.getComputedStyle(o);
-              // replace lab() in computed styles with rgb equivalents when possible
-              if (cs.color) c.style.color = replaceLabInCssValue(cs.color);
-              if (cs.backgroundColor) c.style.backgroundColor = replaceLabInCssValue(cs.backgroundColor);
-              if (cs.borderColor) c.style.borderColor = replaceLabInCssValue(cs.borderColor);
-              if (cs.boxShadow && cs.boxShadow !== 'none') c.style.boxShadow = replaceLabInCssValue(cs.boxShadow);
+              try {
+                // Inline all computed styles to avoid html2canvas reading stylesheets that may contain lab()
+                for (let j = 0; j < cs.length; j++) {
+                  const prop = cs[j];
+                  try {
+                    let val = cs.getPropertyValue(prop);
+                    const priority = cs.getPropertyPriority(prop);
+                    if (val && typeof val === 'string' && val.includes('lab(')) {
+                      val = replaceLabInCssValue(val);
+                    }
+                    if (val) c.style.setProperty(prop, val, priority);
+                  } catch (e) {
+                    // some properties may be readonly or cause errors, ignore
+                  }
+                }
+              } catch (e) {
+                // fallback to copying limited properties
+                if (cs.color) c.style.color = replaceLabInCssValue(cs.color);
+                if (cs.backgroundColor) c.style.backgroundColor = replaceLabInCssValue(cs.backgroundColor);
+                if (cs.borderColor) c.style.borderColor = replaceLabInCssValue(cs.borderColor);
+                if (cs.boxShadow && cs.boxShadow !== 'none') c.style.boxShadow = replaceLabInCssValue(cs.boxShadow);
+              }
+
+              // Replicate simple ::before and ::after pseudo-elements if present
+              try {
+                ['::before', '::after'].forEach((pseudo) => {
+                  const pcs = window.getComputedStyle(o as Element, pseudo as any);
+                  if (!pcs) return;
+                  const content = pcs.getPropertyValue('content');
+                  if (content && content !== 'none' && content !== 'normal' && content !== '""' && content !== "''") {
+                    const txt = content.replace(/^"|"$/g, '').replace(/^'|'$/g, '');
+                    const span = clonedDoc.createElement('span');
+                    span.textContent = txt;
+                    // copy styles from pseudo
+                    for (let k = 0; k < pcs.length; k++) {
+                      const p = pcs[k];
+                      try {
+                        let v = pcs.getPropertyValue(p);
+                        if (v && typeof v === 'string' && v.includes('lab(')) v = replaceLabInCssValue(v);
+                        if (v) span.style.setProperty(p, v, pcs.getPropertyPriority(p));
+                      } catch (e) {
+                        // ignore
+                      }
+                    }
+                    if (pseudo === '::before') c.insertBefore(span, c.firstChild);
+                    else c.appendChild(span);
+                  }
+                });
+              } catch (e) {
+                // ignore pseudo element replication errors
+              }
+            }
+
+            // Inject print-safe overrides to ensure readable PDF colors/layout
+            try {
+              const styleEl = clonedDoc.createElement('style');
+              styleEl.textContent = `
+                html,body{background:#fff !important;color:#000 !important}
+                #invoice-preview{width:190mm !important;min-height:297mm !important;padding:0 !important;background:#fff !important}
+                .bg-gray-50{background:#f8fafc !important}
+                .bg-white{background:#fff !important}
+                .shadow-2xl, .shadow{box-shadow:none !important}
+                .payment-block{background:#f8fafc !important;color:#000 !important}
+                .payment-block img{background:transparent !important}
+                table{border-collapse:collapse !important}
+              `;
+              clonedDoc.head.appendChild(styleEl);
+
+              // Ensure payment block is readable and QR images remain transparent
+              const pbs = clonedDoc.querySelectorAll('.payment-block');
+              pbs.forEach((pb) => {
+                try {
+                  (pb as HTMLElement).style.backgroundColor = '#f8fafc';
+                  (pb as HTMLElement).style.color = '#000';
+                  (pb as HTMLElement).querySelectorAll('img').forEach(img => ((img as HTMLElement).style.background = 'transparent'));
+                } catch (e) {}
+              });
+            } catch (e) {
+              console.warn('inject print overrides failed', e);
             }
           } catch (e) {
             console.warn('onclone style patch failed', e);
@@ -591,7 +665,7 @@ export default function InvoiceApp(): React.JSX.Element {
           </div>
 
           {/* Payment Info */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <div className="payment-block bg-white rounded-xl shadow-sm border border-gray-200 p-6">
              <h2 className="text-lg font-semibold mb-4 text-blue-600">Payment Info</h2>
              <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3">
@@ -661,8 +735,8 @@ export default function InvoiceApp(): React.JSX.Element {
               <div className="p-8">
                 
                 {/* Main Heading */}
-                <div className="text-center mb-10">
-                   <h2 className="text-xl font-bold uppercase tracking-widest border-b-2 border-black pb-2 inline-block" style={{ color: '#000000' }}>
+                <div className="mb-10">
+                   <h2 className="text-xl font-bold uppercase tracking-widest border-b-2 border-black pb-2" style={{ color: '#000000' }}>
                      {invoiceData.invoiceTitle}
                    </h2>
                 </div>
@@ -670,16 +744,21 @@ export default function InvoiceApp(): React.JSX.Element {
                 {/* Header Row */}
                 <div className="flex justify-between items-start mb-16">
                   <div>
-                    <h1 className="text-2xl font-bold tracking-tight uppercase" style={{ color: '#000000' }}>{invoiceData.companyName}</h1>
-                  </div>
+                    <h1 className="text-4xl font-extrabold tracking-tight uppercase" style={{ color: '#000000', lineHeight: 1 }}>{invoiceData.companyName}</h1>
+                    <div className="mt-3 text-left" style={{ color: '#000000' }}>
+                      <p className="font-extrabold text-lg">{invoiceData.companyPhone}</p>
+                      <p className="text-base text-gray-800 mt-1">{invoiceData.companyEmail}</p>
+                      <p className="text-base mt-1 max-w-[360px] leading-tight">{invoiceData.companyAddress}</p>
+                    </div>
+                  </div> 
                   <div className="text-right">
                      <div className="mb-2">
-                        <span className="block text-sm uppercase tracking-wider font-bold" style={{ color: '#333333' }}>Invoice No</span>
-                        <span className="text-xl font-bold" style={{ color: '#000000' }}>{invoiceData.invoiceNo}</span>
+                        <span className="block text-sm uppercase tracking-wider subheading" style={{ color: '#333333' }}>Invoice No</span>
+                        <span className="text-xl font-extrabold" style={{ color: '#000000' }}>{invoiceData.invoiceNo}</span>
                      </div>
                      <div className="mb-6">
-                        <span className="block text-sm uppercase tracking-wider font-bold" style={{ color: '#333333' }}>Date</span>
-                        <span className="text-md font-bold" style={{ color: '#000000' }}>
+                        <span className="block text-sm uppercase tracking-wider subheading" style={{ color: '#333333' }}>Date</span>
+                        <span className="text-md font-extrabold" style={{ color: '#000000' }}>
                           {new Date(invoiceData.date).toLocaleDateString('en-GB')}
                         </span>
                      </div>
@@ -687,7 +766,7 @@ export default function InvoiceApp(): React.JSX.Element {
                      {/* FIXED TOTAL DUE BLOCK - PLAIN BLACK TEXT, NO BOX */}
                      <div className="inline-block text-right min-w-[140px]">
                         <span 
-                          className="block text-xs font-bold uppercase mb-1" 
+                          className="block text-xs subheading uppercase mb-1" 
                           style={{ color: '#000000' }}
                         >
                           Total Due
@@ -717,7 +796,7 @@ export default function InvoiceApp(): React.JSX.Element {
                       <tbody>
                         {invoiceData.items.map((item, index) => (
                           <tr key={index} className="border-b border-gray-200 last:border-0" style={{ pageBreakInside: 'avoid' }}>
-                            <td className="py-4 text-sm font-bold" style={{ color: '#000000' }}>{item.description}</td>
+                            <td className="py-4 text-sm font-normal text-left" style={{ color: '#000000' }}>{item.description}</td>
                             <td className="py-4 text-sm font-medium text-right" style={{ color: '#000000' }}>{item.price} {invoiceData.currency}</td>
                             <td className="py-4 text-sm font-medium text-center" style={{ color: '#000000' }}>{item.qty}</td>
                             <td className="py-4 text-sm font-bold text-right" style={{ color: '#000000' }}>
@@ -733,30 +812,30 @@ export default function InvoiceApp(): React.JSX.Element {
                 <div className="flex justify-between items-start mt-8" style={{ pageBreakInside: 'avoid' }}>
                   {/* Bill To */}
                   <div className="w-1/2 pr-8">
-                     <h4 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: '#000000' }}>Invoice To:</h4>
+                     <h4 className="text-xs font-thin subheading uppercase tracking-wider mb-2" style={{ color: '#000000' }}>Invoice To:</h4> 
                      <div className="font-bold text-lg mb-1" style={{ color: '#000000' }}>{invoiceData.clientName}</div>
                      <div className="text-sm mb-1" style={{ color: '#000000' }}>{invoiceData.clientEmail}</div>
                      <div className="text-sm mb-4" style={{ color: '#000000' }}>{invoiceData.clientPhone}</div>
 
                      {/* Payment Method Block */}
                      <div className="mt-8">
-                        <h4 className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: '#000000' }}>Payment Details:</h4>
-                        <div className="bg-gray-50 p-4 rounded border border-gray-200 text-sm">
-                           <div className="flex gap-4">
-                              {/* QR Code */}
-                              <div className="flex-shrink-0">
-                                {invoiceData.qrCodeImage ? (
-                                  <img src={invoiceData.qrCodeImage} alt="Payment QR" className="w-24 h-24 object-cover border rounded" />
-                                ) : (
-                                  <div className="w-24 h-24 bg-gray-200 flex items-center justify-center text-xs text-gray-500">No QR</div>
-                                )}
+                        <h4 className="text-lg heading uppercase tracking-wider mb-4" style={{ color: '#000000' }}>Payment Details:</h4>  
+                        <div className="bg-gray-50 payment-card p-3 rounded-lg border border-gray-300 text-sm overflow-hidden" style={{ borderWidth: '1.25px' }}>
+                           <div className="grid grid-cols-[1fr_auto] gap-4 items-center">
+                              <div className="bank-details text-left pr-3">
+                                 <p className="bank-name" style={{ color: '#000000', marginBottom: '6px' }}>{invoiceData.bankName}</p>
+                                 <p className="mb-1" style={{ color: '#000000' }}><span className="font-medium">A/C:</span> {invoiceData.accountNumber}</p>
+                                 <p className="mb-1" style={{ color: '#000000' }}><span className="font-medium">IFSC:</span> {invoiceData.ifscCode}</p>
+                                 <p className="mb-0" style={{ color: '#000000' }}><span className="font-medium">UPI:</span> {invoiceData.upiId}</p>
                               </div>
-                              {/* Bank Details */}
-                              <div className="flex flex-col justify-center space-y-1">
-                                 <p className="font-bold" style={{ color: '#000000' }}>{invoiceData.bankName}</p>
-                                 <p style={{ color: '#000000' }}><span className="font-medium">A/C:</span> {invoiceData.accountNumber}</p>
-                                 <p style={{ color: '#000000' }}><span className="font-medium">IFSC:</span> {invoiceData.ifscCode}</p>
-                                 <p style={{ color: '#000000' }}><span className="font-medium">UPI:</span> {invoiceData.upiId}</p>
+                              <div className="flex items-center justify-center">
+                                <div className="qr-frame">
+                                  {invoiceData.qrCodeImage ? (
+                                    <img src={invoiceData.qrCodeImage} alt="Payment QR" className="qr-large" />
+                                  ) : (
+                                    <div className="qr-large bg-gray-200 flex items-center justify-center text-xs text-gray-500">No QR</div>
+                                  )}
+                                </div>
                               </div>
                            </div>
                         </div>
@@ -767,22 +846,22 @@ export default function InvoiceApp(): React.JSX.Element {
                   <div className="w-1/3">
                       <div className="space-y-3 border-t-2 border-black pt-4">
                         <div className="flex justify-between items-center" style={{ color: '#000000' }}>
-                           <span className="font-bold text-sm">Sub-total:</span>
+                           <span className="subheading text-sm">Sub-total:</span>
                            <span className="font-bold">{calculateSubTotal().toLocaleString()} {invoiceData.currency}</span>
                         </div>
                         <div className="flex justify-between items-center text-red-600">
-                           <span className="font-bold text-sm">Discount:</span>
+                           <span className="subheading text-sm">Discount:</span>
                            <span className="font-bold">- {invoiceData.discount} {invoiceData.currency}</span>
                         </div>
                         
                          <div className="flex justify-between items-center" style={{ color: '#000000' }}>
-                            <span className="font-bold text-sm">Total:</span>
+                            <span className="subheading text-sm">Total:</span>
                             <span className="font-bold">{calculateTotal().toLocaleString()} {invoiceData.currency}</span>
                          </div>
                         
                         {invoiceData.amountPaid > 0 && (
                            <div className="flex justify-between items-center text-green-700">
-                              <span className="font-bold text-sm">Paid:</span>
+                              <span className="subheading text-sm">Paid:</span>
                               <span className="font-bold">- {invoiceData.amountPaid} {invoiceData.currency}</span>
                            </div>
                         )}
@@ -794,7 +873,7 @@ export default function InvoiceApp(): React.JSX.Element {
                       </div>
                       
                       <div className="mt-8 text-right">
-                         <p className="text-sm font-bold italic" style={{ color: '#2563eb' }}>Thank you for purchase!</p>
+                         <p className="text-sm subheading italic" style={{ color: '#2563eb' }}>Thank you for purchase!</p>
                       </div>
                   </div>
                 </div>
@@ -808,7 +887,7 @@ export default function InvoiceApp(): React.JSX.Element {
                     <div>
                        <h4 className="text-md font-bold mb-2" style={{ color: '#000000' }}>Contact Us</h4>
                        <div className="space-y-1 text-sm" style={{ color: '#000000' }}>
-                          <p className="font-bold">{invoiceData.companyPhone}</p>
+                          <p className="font-normal">{invoiceData.companyPhone}</p>
                           <p>{invoiceData.companyEmail}</p>
                           <p className="max-w-[200px] leading-tight mt-2">{invoiceData.companyAddress}</p>
                        </div>
